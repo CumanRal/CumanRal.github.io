@@ -1708,21 +1708,12 @@ var KociembaAdapter = (() => {
           return Cube.computePruningTables();
         };
         Cube.prototype.solveUpright = function(maxDepth = 22, detailSink = null) {
-          var State, freeStates, moveNames, phase1, phase1search, phase2, phase2search, solution, state, x;
+          var State, freeStates, moveNames, phase1, phase1search, phase2, phase2search, state, x;
           if (detailSink) {
             detailSink.phase1Length = null;
             detailSink.phase2Length = null;
             detailSink.totalMoves = 0;
             detailSink.solution = null;
-          }
-          if (this.isSolved()) {
-            if (detailSink) {
-              detailSink.phase1Length = 0;
-              detailSink.phase2Length = 0;
-              detailSink.totalMoves = 0;
-              detailSink.solution = "";
-            }
-            return "";
           }
           moveNames = (function() {
             var face, faceName, m, o, power, powerName, result;
@@ -1826,8 +1817,8 @@ var KociembaAdapter = (() => {
                 this.URtoUL = this.move("URtoUL", this.parent.URtoUL, this.lastMove);
                 this.UBtoDF = this.move("UBtoDF", this.parent.UBtoDF, this.lastMove);
               }
-              if (top || this.parent === null) {
-                return this.URtoDF = mergeURtoDF(this.URtoUL, this.UBtoDF);
+              if (top) {
+                return this.URtoDF = this.move("mergeURtoDF", this.URtoUL, this.UBtoDF);
               }
             }
             // Compute the next phase 2 state for the given move
@@ -1844,92 +1835,96 @@ var KociembaAdapter = (() => {
               return next;
             }
           };
-          solution = null;
-          phase1search = function(state2) {
-            var depth, m, ref, results;
-            depth = 0;
-            results = [];
-            for (depth = m = 0, ref = maxDepth; 0 <= ref ? m <= ref : m >= ref; depth = 0 <= ref ? ++m : --m) {
-              phase1(state2, depth);
-              if (solution !== null) {
-                break;
-              }
-              results.push(depth++);
+          let bestSolution = null;
+          let bestLength = Infinity;
+          let optimizing = false;
+          let optimizationExpired = false;
+          let optimizationDeadline = Infinity;
+          let phase2Found = false;
+          let phase2StartDepth = 0;
+          let visitedNodes = 0;
+          const searchStartedAt = performance.now();
+          const checkSearchBudget = () => {
+            visitedNodes += 1;
+            if (visitedNodes % 5e4 === 0 && performance.now() - searchStartedAt >= 3e3) {
+              throw new Error("Solver timed out after 3 seconds.");
             }
-            return results;
+            if (optimizing && visitedNodes % 1024 === 0 && performance.now() >= optimizationDeadline) {
+              optimizationExpired = true;
+            }
           };
-          phase1 = function(state2, depth) {
-            var len, m, move, next, ref, ref1, results;
+          const recordSolution = (currentState) => {
+            const candidate = currentState.solution().trim();
+            const candidateLength = candidate ? candidate.split(/\s+/).length : 0;
+            if (candidateLength < bestLength) {
+              bestSolution = candidate;
+              bestLength = candidateLength;
+              if (detailSink) {
+                detailSink.solution = candidate;
+                detailSink.totalMoves = candidateLength;
+                detailSink.phase1Length = phase2StartDepth;
+                detailSink.phase2Length = Math.max(0, candidateLength - phase2StartDepth);
+              }
+            }
+            phase2Found = true;
+          };
+          phase1search = function(rootState) {
+            for (let depth = 0; depth <= maxDepth && bestSolution === null; depth += 1) {
+              phase1(rootState, depth);
+            }
+            if (bestSolution === null) return;
+            optimizing = true;
+            optimizationDeadline = performance.now() + 150;
+            for (let depth = 0; depth < bestLength && !optimizationExpired; depth += 1) {
+              phase1(rootState, depth);
+              if (bestLength === 0 || performance.now() >= optimizationDeadline) break;
+            }
+          };
+          phase1 = function(currentState, depth) {
+            checkSearchBudget();
+            if (optimizationExpired) return;
             if (depth === 0) {
-              if (state2.minDist1() === 0) {
-                if (state2.lastMove === null || (ref = state2.lastMove, indexOf.call(allMoves2, ref) < 0)) {
-                  return phase2search(state2);
+              if (currentState.minDist1() === 0) {
+                if (currentState.lastMove === null || indexOf.call(allMoves2, currentState.lastMove) < 0) {
+                  return phase2search(currentState);
                 }
               }
-            } else if (depth > 0) {
-              if (state2.minDist1() <= depth) {
-                ref1 = state2.moves1();
-                results = [];
-                for (m = 0, len = ref1.length; m < len; m++) {
-                  move = ref1[m];
-                  next = state2.next1(move);
-                  phase1(next, depth - 1);
-                  freeStates.push(next);
-                  if (solution !== null) {
-                    break;
-                  } else {
-                    results.push(void 0);
-                  }
-                }
-                return results;
+            } else if (depth > 0 && currentState.minDist1() <= depth) {
+              const validMoves = currentState.moves1();
+              for (let moveIndex = 0; moveIndex < validMoves.length; moveIndex += 1) {
+                const nextState = currentState.next1(validMoves[moveIndex]);
+                phase1(nextState, depth - 1);
+                freeStates.push(nextState);
+                if (!optimizing && bestSolution !== null || optimizationExpired) break;
               }
             }
           };
-          phase2search = function(state2) {
-            var depth, m, ref, results;
-            state2.init2();
-            if (detailSink) {
-              detailSink.phase1Length = state2.depth;
+          phase2search = function(currentState) {
+            currentState.init2();
+            phase2StartDepth = currentState.depth;
+            const maxPhase2Depth = Math.min(
+              maxDepth - currentState.depth,
+              optimizing ? bestLength - 1 - currentState.depth : maxDepth - currentState.depth
+            );
+            if (maxPhase2Depth < 0) return;
+            phase2Found = false;
+            for (let depth = 0; depth <= maxPhase2Depth; depth += 1) {
+              phase2(currentState, depth);
+              if (phase2Found || optimizationExpired) break;
             }
-            results = [];
-            for (depth = m = 0, ref = maxDepth - state2.depth; 0 <= ref ? m <= ref : m >= ref; depth = 0 <= ref ? ++m : --m) {
-              phase2(state2, depth);
-              if (solution !== null) {
-                break;
-              }
-              results.push(depth++);
-            }
-            return results;
           };
-          phase2 = function(state2, depth) {
-            var len, m, move, next, ref, results;
+          phase2 = function(currentState, depth) {
+            checkSearchBudget();
+            if (optimizationExpired) return;
             if (depth === 0) {
-              if (state2.minDist2() === 0) {
-                solution = state2.solution();
-                if (detailSink) {
-                  detailSink.solution = solution;
-                  detailSink.totalMoves = solution.trim().split(/\s+/).filter(Boolean).length;
-                  detailSink.phase1Length = detailSink.phase1Length == null ? 0 : detailSink.phase1Length;
-                  detailSink.phase2Length = Math.max(0, detailSink.totalMoves - detailSink.phase1Length);
-                }
-                return solution;
-              }
-            } else if (depth > 0) {
-              if (state2.minDist2() <= depth) {
-                ref = state2.moves2();
-                results = [];
-                for (m = 0, len = ref.length; m < len; m++) {
-                  move = ref[m];
-                  next = state2.next2(move);
-                  phase2(next, depth - 1);
-                  freeStates.push(next);
-                  if (solution !== null) {
-                    break;
-                  } else {
-                    results.push(void 0);
-                  }
-                }
-                return results;
+              if (currentState.minDist2() === 0) recordSolution(currentState);
+            } else if (currentState.minDist2() <= depth) {
+              const validMoves = currentState.moves2();
+              for (let moveIndex = 0; moveIndex < validMoves.length; moveIndex += 1) {
+                const nextState = currentState.next2(validMoves[moveIndex]);
+                phase2(nextState, depth - 1);
+                freeStates.push(nextState);
+                if (phase2Found || optimizationExpired) break;
               }
             }
           };
@@ -1944,16 +1939,15 @@ var KociembaAdapter = (() => {
           state = freeStates.pop().init(this);
           phase1search(state);
           freeStates.push(state);
-          if (solution && solution.length > 0) {
-            solution = solution.substring(0, solution.length - 1);
-          }
           if (detailSink) {
-            detailSink.solution = solution || "";
-            detailSink.totalMoves = (solution || "").trim().split(/\s+/).filter(Boolean).length;
-            detailSink.phase1Length = detailSink.phase1Length == null ? 0 : detailSink.phase1Length;
-            detailSink.phase2Length = Math.max(0, detailSink.totalMoves - detailSink.phase1Length);
+            detailSink.solution = bestSolution || "";
+            detailSink.totalMoves = bestLength === Infinity ? 0 : bestLength;
+            if (bestLength === Infinity) {
+              detailSink.phase1Length = null;
+              detailSink.phase2Length = 0;
+            }
           }
-          return solution || "";
+          return bestSolution || "";
         };
         faceNums = {
           U: 0,
@@ -2001,42 +1995,93 @@ var KociembaAdapter = (() => {
     "solver/cubejs-patched.js"(exports, module) {
       var Cube = require_cube();
       require_solve();
+      var solverInitialized = false;
+      function permutationParity(permutation) {
+        let parity = 0;
+        for (let i = 0; i < permutation.length; i += 1) {
+          for (let j = i + 1; j < permutation.length; j += 1) {
+            if (permutation[i] > permutation[j]) parity ^= 1;
+          }
+        }
+        return parity;
+      }
+      function validateCube(facelets, cube) {
+        if (cube.asString() !== facelets) {
+          throw new Error("Invalid cube facelet state: the facelets do not form recognizable cubies.");
+        }
+        const counts = new Map(Array.from("URFDLB", (face) => [face, 0]));
+        for (const face of facelets) counts.set(face, counts.get(face) + 1);
+        if ([...counts.values()].some((count) => count !== 9)) {
+          throw new Error("Invalid cube facelet state: each face color must appear exactly nine times.");
+        }
+        if (!cube.center.every((center, index) => center === index)) {
+          throw new Error("Invalid cube facelet state: face centers must remain in standard order.");
+        }
+        const validPermutation = (values, size) => values.length === size && values.every((value) => Number.isInteger(value) && value >= 0 && value < size) && new Set(values).size === size;
+        if (!validPermutation(cube.cp, 8) || !validPermutation(cube.ep, 12)) {
+          throw new Error("Invalid cube facelet state: cubies must form a complete permutation.");
+        }
+        if (cube.co.some((value) => value < 0 || value > 2) || cube.co.reduce((sum, value) => sum + value, 0) % 3 !== 0) {
+          throw new Error("Invalid cube facelet state: corner orientations are not reachable.");
+        }
+        if (cube.eo.some((value) => value < 0 || value > 1) || cube.eo.reduce((sum, value) => sum + value, 0) % 2 !== 0) {
+          throw new Error("Invalid cube facelet state: edge orientations are not reachable.");
+        }
+        if (permutationParity(cube.cp) !== permutationParity(cube.ep)) {
+          throw new Error("Invalid cube facelet state: corner and edge permutation parity must match.");
+        }
+      }
+      function initSolver() {
+        if (solverInitialized) return;
+        Cube.initSolver();
+        solverInitialized = true;
+      }
       function solveFaceletsDetailed(facelets, maxDepth = 22) {
         if (typeof facelets !== "string" || facelets.length !== 54) {
           throw new TypeError("A cube facelet string must contain exactly 54 characters.");
+        }
+        if (!Number.isInteger(maxDepth) || maxDepth < 0) {
+          throw new RangeError("The solver depth limit must be a non-negative integer.");
         }
         if (!/^[URFDLB]+$/.test(facelets)) {
           throw new TypeError("Facelet strings may only contain the six cube face letters U, R, F, D, L, and B.");
         }
         const parsed = Cube.fromString(facelets);
+        validateCube(facelets, parsed);
+        if (parsed.isSolved()) {
+          return { ok: true, solution: "", phase1Length: 0, phase2Length: 0, totalMoves: 0 };
+        }
         const detail = { solution: "", phase1Length: null, phase2Length: 0, totalMoves: 0 };
         const solution = parsed.solveUpright(maxDepth, detail);
         const finalSolution = typeof solution === "string" ? solution.trim() : "";
-        if (detail.totalMoves === 0 && finalSolution) {
-          detail.totalMoves = finalSolution.split(/\s+/).filter(Boolean).length;
-        }
-        if (detail.phase1Length === null && detail.totalMoves > 0) {
-          detail.phase1Length = 0;
-        }
+        detail.totalMoves = finalSolution ? finalSolution.split(/\s+/).filter(Boolean).length : 0;
         detail.phase2Length = Math.max(0, detail.totalMoves - (detail.phase1Length ?? 0));
+        if (!finalSolution) {
+          return {
+            ok: false,
+            solution: "",
+            error: `No solution within depth ${maxDepth}`,
+            phase1Length: null,
+            phase2Length: 0,
+            totalMoves: 0
+          };
+        }
         return {
+          ok: true,
           solution: finalSolution,
           phase1Length: detail.phase1Length ?? 0,
           phase2Length: detail.phase2Length,
           totalMoves: detail.totalMoves
         };
       }
-      module.exports = { Cube, solveFaceletsDetailed };
+      module.exports = { Cube, initSolver, solveFaceletsDetailed };
     }
   });
 
   // solver/kociemba-source.js
   var require_kociemba_source = __commonJS({
     "solver/kociemba-source.js"(exports, module) {
-      var { Cube, solveFaceletsDetailed } = require_cubejs_patched();
-      function initSolver() {
-        Cube.initSolver();
-      }
+      var { initSolver, solveFaceletsDetailed } = require_cubejs_patched();
       function solveFacelets(facelets, maxDepth = 22) {
         if (typeof facelets !== "string" || facelets.length !== 54) {
           throw new TypeError("A cube facelet string must contain exactly 54 characters.");
@@ -2044,8 +2089,10 @@ var KociembaAdapter = (() => {
         if (!/^[URFDLB]+$/.test(facelets)) {
           throw new TypeError("Facelet strings may only contain the six cube face letters U, R, F, D, L, and B.");
         }
-        const parsed = Cube.fromString(facelets);
         const result = solveFaceletsDetailed(facelets, maxDepth);
+        if (!result.ok) {
+          throw new Error(result.error);
+        }
         if (typeof result.solution !== "string") {
           throw new Error("Solver did not return a valid move string.");
         }

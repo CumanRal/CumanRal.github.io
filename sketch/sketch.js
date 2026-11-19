@@ -179,6 +179,9 @@ let solverPlaybackTimer = null;
 let solverExecutionIndex = 0;
 let solverPlaybackSpeed = 1;
 let solverPhase1Length = null;
+let solverError = null;
+let solverInitialized = false;
+let solverRequestId = 0;
 const solverSearchPath = createSearchPath(document.getElementById('solver-path-panel'));
 
 function roundVector(vector) {
@@ -290,7 +293,7 @@ function cloneCubeState(stickers) {
 function createCubeNetFromState(stickers, { representation = 'stickers', highlight = null, patternSubset = false } = {}) {
   const trackedCubies = new Set(['1,0,1', '-1,0,1', '0,1,1', '0,1,-1']);
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 302 233');
+  svg.setAttribute('viewBox', '0 0 302 242');
   svg.setAttribute('class', 'cube-net');
   svg.setAttribute('role', 'img');
   svg.setAttribute('aria-label', `${representation === 'stickers' ? '54 facelet' : 'cubie'} cube state`);
@@ -302,7 +305,9 @@ function createCubeNetFromState(stickers, { representation = 'stickers', highlig
     const label = document.createElementNS(svg.namespaceURI, 'text');
     label.setAttribute('class', 'cube-face-label');
     label.setAttribute('x', String(padding + originColumn * pitch + 35));
-    label.setAttribute('y', String(padding + originRow * pitch - 3));
+    label.setAttribute('y', String(face === 'D'
+      ? padding + (originRow + 3) * pitch + 7
+      : padding + originRow * pitch - 3));
     label.textContent = netLabels[face];
     svg.appendChild(label);
   }
@@ -591,27 +596,77 @@ function resetSolverPlayback() {
 }
 
 function renderSolutionText() {
+  renderSolutionMoves(solverSolutionMoves, solverPhase1Length);
+}
+
+function renderSolutionMoves(moves, phase1Length) {
   const solutionNode = document.getElementById('solver-solution-text');
   if (!solutionNode) return;
+  solutionNode.replaceChildren();
 
-  if (!solverSolutionMoves.length) {
-    solutionNode.textContent = isCubeSolved(solverCurrentState) ? 'Solved already.' : 'No solution yet.';
+  if (!Array.isArray(moves) || !moves.length) {
+    const empty = document.createElement('span');
+    empty.className = 'sol-empty';
+    empty.textContent = solverError || (isCubeSolved(solverCurrentState) ? 'Solved already.' : 'No solution yet.');
+    solutionNode.appendChild(empty);
     return;
   }
 
-  const phase1Value = Number.isInteger(solverPhase1Length) && solverPhase1Length >= 0 ? solverPhase1Length : null;
-  const activeIndex = solverExecutionIndex > 0 ? solverExecutionIndex - 1 : -1;
-  const fragments = solverSolutionMoves.map((move, index) => {
-    const chip = document.createElement('span');
-    chip.className = 'solver-solution-chip';
-    chip.textContent = move;
-    if (phase1Value === null) chip.dataset.phase = 'neutral';
-    else chip.dataset.phase = index < phase1Value ? 'stage1' : 'stage2';
-    if (index === activeIndex) chip.classList.add('is-active');
-    return chip;
-  });
+  const split = Number.isInteger(phase1Length) && phase1Length >= 0
+    ? Math.min(phase1Length, moves.length)
+    : null;
 
-  solutionNode.replaceChildren(...fragments);
+  if (split !== null) {
+    const stage1Label = document.createElement('span');
+    stage1Label.className = 'sol-group-label sol-group-p1';
+    stage1Label.textContent = `Stage 1 · ${split} moves`;
+    solutionNode.appendChild(stage1Label);
+
+    for (let index = 0; index < split; index += 1) {
+      solutionNode.appendChild(createSolutionChip(moves[index], 'p1', index));
+    }
+
+    const divider = document.createElement('span');
+    divider.className = 'sol-divider';
+    divider.setAttribute('aria-hidden', 'true');
+    divider.textContent = '| G1 |';
+    solutionNode.appendChild(divider);
+
+    const stage2Label = document.createElement('span');
+    stage2Label.className = 'sol-group-label sol-group-p2';
+    stage2Label.textContent = `Stage 2 · ${moves.length - split} moves`;
+    solutionNode.appendChild(stage2Label);
+
+    for (let index = split; index < moves.length; index += 1) {
+      solutionNode.appendChild(createSolutionChip(moves[index], 'p2', index));
+    }
+  } else {
+    moves.forEach((move, index) => solutionNode.appendChild(createSolutionChip(move, 'neutral', index)));
+  }
+
+  updateSolutionChipStates();
+}
+
+function createSolutionChip(move, phase, index) {
+  const chip = document.createElement('span');
+  chip.className = `sol-move ${phase}`;
+  chip.dataset.i = String(index);
+  chip.textContent = move;
+  return chip;
+}
+
+function updateSolutionChipStates() {
+  const solutionNode = document.getElementById('solver-solution-text');
+  if (!solutionNode) return;
+  solutionNode.querySelectorAll('.sol-move').forEach(chip => {
+    const index = Number(chip.dataset.i);
+    chip.classList.toggle('played', index < solverExecutionIndex);
+    chip.classList.toggle('upcoming', index >= solverExecutionIndex);
+    const current = index === solverExecutionIndex - 1;
+    chip.classList.toggle('current', current);
+    if (current) chip.setAttribute('aria-current', 'step');
+    else chip.removeAttribute('aria-current');
+  });
 }
 
 function renderSolverCube() {
@@ -629,7 +684,8 @@ function renderSolverCube() {
       solvedFacelets: cubeStateToFaceletString(solvedFacelets()),
       phase1Length: solverPhase1Length,
       index: solverExecutionIndex,
-      status: solverSolutionMoves.length ? 'active' : isCubeSolved(solverCurrentState) ? 'already-solved' : 'idle'
+      status: solverError ? 'error' : solverSolutionMoves.length ? 'active' : isCubeSolved(solverCurrentState) ? 'already-solved' : 'idle',
+      error: solverError
     });
   }
 
@@ -660,13 +716,14 @@ function renderSolverStats() {
 }
 
 function syncSolverFromCurrentState() {
+  solverError = null;
+  solverRequestId += 1;
   solverInitialState = cloneCubeState(solverCurrentState);
   solverExecutionIndex = 0;
   solverSolutionMoves = [];
   solverPhase1Length = null;
   renderSolverCube();
   renderSolverStats();
-  renderSolutionText();
   const statusLabel = document.getElementById('solver-status-label');
   if (statusLabel) statusLabel.textContent = 'READY';
   const phaseText = document.getElementById('solver-phase-text');
@@ -674,6 +731,9 @@ function syncSolverFromCurrentState() {
 }
 
 function applySolverMove(move) {
+  solverRequestId += 1;
+  solverError = null;
+  resetSolverPlayback();
   const next = cloneCubeState(solverCurrentState);
   applyCubeMove(next, move);
   solverCurrentState = next;
@@ -692,6 +752,8 @@ function updateSolverInputFromState() {
 }
 
 function setCubeStateFromScramble(text) {
+  solverRequestId += 1;
+  solverError = null;
   try {
     const moves = parseMoveExpression(text);
     const solved = solvedFacelets();
@@ -703,6 +765,7 @@ function setCubeStateFromScramble(text) {
     solverSolutionMoves = [];
     solverExecutionIndex = 0;
     solverPhase1Length = null;
+    solverError = null;
     resetSolverPlayback();
     renderSolverCube();
     setSolverMessage('Current cube is ready for solving.', 'info');
@@ -712,7 +775,6 @@ function setCubeStateFromScramble(text) {
     if (phaseText) phaseText.textContent = 'Waiting';
     const statusLabel = document.getElementById('solver-status-label');
     if (statusLabel) statusLabel.textContent = 'READY';
-    renderSolutionText();
     renderSolverStats();
   } catch (error) {
     setSolverMessage(error.message, 'error');
@@ -723,7 +785,7 @@ function randomSolverScramble() {
   const faces = ['R', 'U', 'F', 'D', 'L', 'B'];
   const modifiers = ['', "'", '2'];
   const scrambleMoves = [];
-  for (let index = 0; index < 12; index++) {
+  for (let index = 0; index < 20; index++) {
     const face = faces[Math.floor(Math.random() * faces.length)];
     const modifier = modifiers[Math.floor(Math.random() * modifiers.length)];
     scrambleMoves.push(`${face}${modifier}`);
@@ -791,54 +853,82 @@ function playSolverSequence() {
 }
 
 function solveCurrentCube() {
-  if (!window.KociembaAdapter || typeof window.KociembaAdapter.solveFacelets !== 'function') {
+  if (!window.KociembaAdapter || typeof window.KociembaAdapter.solveFaceletsDetailed !== 'function') {
     setSolverMessage('The Kociemba solver bundle is not available in this page.', 'error');
     return;
   }
+  const requestId = ++solverRequestId;
+  solverError = null;
+  solverSolutionMoves = [];
+  solverPhase1Length = null;
+  solverExecutionIndex = 0;
+  solverInitialState = cloneCubeState(solverCurrentState);
   const statusLabel = document.getElementById('solver-status-label');
   if (statusLabel) statusLabel.textContent = 'SEARCHING';
   const phaseText = document.getElementById('solver-phase-text');
   if (phaseText) phaseText.textContent = 'Kociemba search';
   setSolverMessage('Searching for a valid Kociemba solution…', 'info');
   resetSolverPlayback();
+  renderSolverCube();
+  renderSolverStats();
 
-  window.setTimeout(() => {
+  window.requestAnimationFrame(() => window.setTimeout(() => {
+    if (requestId !== solverRequestId) return;
     try {
       const faceletString = cubeStateToFaceletString(solverCurrentState);
-      window.KociembaAdapter.initSolver();
+      if (!solverInitialized) {
+        window.KociembaAdapter.initSolver();
+        solverInitialized = true;
+      }
       const start = performance.now();
       const detailed = window.KociembaAdapter.solveFaceletsDetailed(faceletString, 22);
       const elapsedMs = performance.now() - start;
-      const solution = detailed && typeof detailed.solution === 'string' ? detailed.solution : '';
-      const parsedMoves = parseMoveExpression(solution);
+      if (!detailed.ok) {
+        solverError = detailed.error || 'Solver did not find a solution within the depth limit.';
+        solverSolutionMoves = [];
+        solverPhase1Length = null;
+        if (statusLabel) statusLabel.textContent = 'ERROR';
+        if (phaseText) phaseText.textContent = 'No solution found';
+        setSolverMessage(solverError, 'error');
+        renderSolverStats();
+        renderSolverCube();
+        return;
+      }
+      if (typeof detailed.solution !== 'string'
+        || !Number.isInteger(detailed.totalMoves)
+        || !Number.isInteger(detailed.phase1Length)
+        || detailed.totalMoves < 0
+        || detailed.phase1Length < 0
+        || detailed.phase1Length > detailed.totalMoves) {
+        throw new Error('Solver returned an invalid detailed result.');
+      }
+      const parsedMoves = parseMoveExpression(detailed.solution);
+      if (parsedMoves.length !== detailed.totalMoves) {
+        throw new Error('Solver result move count does not match its solution.');
+      }
       solverSolutionMoves = parsedMoves;
       solverInitialState = cloneCubeState(solverCurrentState);
       solverExecutionIndex = 0;
-      solverPhase1Length = detailed && Number.isInteger(detailed.phase1Length) ? detailed.phase1Length : null;
-      renderSolutionText();
-      const total = document.getElementById('solver-stat-total');
-      if (total) total.textContent = String(parsedMoves.length);
+      solverPhase1Length = Number.isInteger(detailed.phase1Length) ? detailed.phase1Length : null;
+      solverError = null;
+      renderSolverStats();
       const time = document.getElementById('solver-stat-time');
       if (time) time.textContent = `${elapsedMs.toFixed(1)} ms`;
-      const phase1 = document.getElementById('solver-stat-phase1');
-      const phase2 = document.getElementById('solver-stat-phase2');
-      if (phase1 && phase2) {
-        const phase1Value = Number.isInteger(solverPhase1Length) && solverPhase1Length >= 0 ? solverPhase1Length : null;
-        phase1.textContent = phase1Value === null ? '—' : String(phase1Value);
-        phase2.textContent = phase1Value === null ? '—' : String(Math.max(0, parsedMoves.length - phase1Value));
-      }
-      if (statusLabel) statusLabel.textContent = 'FOUND';
-      if (phaseText) phaseText.textContent = 'Solution found';
+      if (statusLabel) statusLabel.textContent = parsedMoves.length ? 'FOUND' : 'SOLVED';
+      if (phaseText) phaseText.textContent = parsedMoves.length ? 'Solution found' : 'Solved';
       setSolverMessage(parsedMoves.length ? 'Kociemba returned a valid solution. Replay it to watch the actual cube moves execute.' : 'The cube is already solved.', 'success');
-      renderSolutionPlaybackFrame(0);
+      renderSolverCube();
     } catch (error) {
       solverPhase1Length = null;
+      solverError = error instanceof Error ? error.message : String(error);
       if (statusLabel) statusLabel.textContent = 'ERROR';
-      if (phaseText) phaseText.textContent = 'Invalid cube';
-      setSolverMessage(error.message || 'Solver failed.', 'error');
+      if (phaseText) phaseText.textContent = 'Solver failed';
+      setSolverMessage(solverError || 'Solver failed.', 'error');
+      renderSolverStats();
+      renderSolverCube();
       console.error(error);
     }
-  }, 0);
+  }, 0));
 }
 
 function updateSolverFromInput() {
@@ -855,6 +945,8 @@ function setupSolverControls() {
 
   document.getElementById('solver-scramble-random')?.addEventListener('click', randomSolverScramble);
   document.getElementById('solver-reset')?.addEventListener('click', () => {
+    solverRequestId += 1;
+    solverError = null;
     solverCurrentState = solvedFacelets();
     solverInitialState = cloneCubeState(solverCurrentState);
     solverSolutionMoves = [];
@@ -867,7 +959,6 @@ function setupSolverControls() {
     const statusLabel = document.getElementById('solver-status-label');
     if (phaseText) phaseText.textContent = 'Solved';
     if (statusLabel) statusLabel.textContent = 'READY';
-    renderSolutionText();
     renderSolverStats();
     setSolverMessage('The cube has been reset to the solved state.', 'info');
   });

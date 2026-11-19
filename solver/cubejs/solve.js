@@ -661,7 +661,7 @@
   };
 
   Cube.prototype.solveUpright = function(maxDepth = 22, detailSink = null) {
-    var State, freeStates, moveNames, phase1, phase1search, phase2, phase2search, solution, state, x;
+    var State, freeStates, moveNames, phase1, phase1search, phase2, phase2search, state, x;
     if (detailSink) {
       detailSink.phase1Length = null;
       detailSink.phase2Length = null;
@@ -782,21 +782,17 @@
 
       // Initialize phase 2 coordinates
       init2(top = true) {
-        if (this.parent === null) {
-          return;
+        if (this.parent !== null) {
+          // For other states, compute phase-two coordinates from the parent.
+          this.parent.init2(false);
+          this.URFtoDLF = this.move('URFtoDLF', this.parent.URFtoDLF, this.lastMove);
+          this.FRtoBR = this.move('FRtoBR', this.parent.FRtoBR, this.lastMove);
+          this.parity = this.move('parity', this.parent.parity, this.lastMove);
+          this.URtoUL = this.move('URtoUL', this.parent.URtoUL, this.lastMove);
+          this.UBtoDF = this.move('UBtoDF', this.parent.UBtoDF, this.lastMove);
         }
-        // For other states, the phase 2 state is computed based on
-        // parent's state.
-        // Already assigned for the initial state
-        this.parent.init2(false);
-        this.URFtoDLF = this.move('URFtoDLF', this.parent.URFtoDLF, this.lastMove);
-        this.FRtoBR = this.move('FRtoBR', this.parent.FRtoBR, this.lastMove);
-        this.parity = this.move('parity', this.parent.parity, this.lastMove);
-        this.URtoUL = this.move('URtoUL', this.parent.URtoUL, this.lastMove);
-        this.UBtoDF = this.move('UBtoDF', this.parent.UBtoDF, this.lastMove);
         if (top) {
-          // This is the initial phase 2 state. Get the URtoDF coordinate
-          // by merging URtoUL and UBtoDF
+          // Only the phase-two start state can merge the partial coordinates.
           return this.URtoDF = this.move('mergeURtoDF', this.URtoUL, this.UBtoDF);
         }
       }
@@ -816,96 +812,101 @@
       }
 
     };
-    solution = null;
-    phase1search = function(state) {
-      var depth, m, ref, results;
-      depth = 0;
-      results = [];
-      for (depth = m = 1, ref = maxDepth; (1 <= ref ? m <= ref : m >= ref); depth = 1 <= ref ? ++m : --m) {
-        phase1(state, depth);
-        if (solution !== null) {
-          break;
-        }
-        results.push(depth++);
+    let bestSolution = null;
+    let bestLength = Infinity;
+    let optimizing = false;
+    let optimizationExpired = false;
+    let optimizationDeadline = Infinity;
+    let phase2Found = false;
+    let phase2StartDepth = 0;
+    let visitedNodes = 0;
+    const searchStartedAt = performance.now();
+    const checkSearchBudget = () => {
+      visitedNodes += 1;
+      if (visitedNodes % 50000 === 0 && performance.now() - searchStartedAt >= 3000) {
+        throw new Error('Solver timed out after 3 seconds.');
       }
-      return results;
+      if (optimizing && visitedNodes % 1024 === 0 && performance.now() >= optimizationDeadline) {
+        optimizationExpired = true;
+      }
     };
-    phase1 = function(state, depth) {
-      var len, m, move, next, ref, ref1, results;
+    const recordSolution = (currentState) => {
+      const candidate = currentState.solution().trim();
+      const candidateLength = candidate ? candidate.split(/\s+/).length : 0;
+      if (candidateLength < bestLength) {
+        bestSolution = candidate;
+        bestLength = candidateLength;
+        if (detailSink) {
+          detailSink.solution = candidate;
+          detailSink.totalMoves = candidateLength;
+          detailSink.phase1Length = phase2StartDepth;
+          detailSink.phase2Length = Math.max(0, candidateLength - phase2StartDepth);
+        }
+      }
+      phase2Found = true;
+    };
+
+    phase1search = function(rootState) {
+      for (let depth = 0; depth <= maxDepth && bestSolution === null; depth += 1) {
+        phase1(rootState, depth);
+      }
+      if (bestSolution === null) return;
+
+      optimizing = true;
+      optimizationDeadline = performance.now() + 150;
+      for (let depth = 0; depth < bestLength && !optimizationExpired; depth += 1) {
+        phase1(rootState, depth);
+        if (bestLength === 0 || performance.now() >= optimizationDeadline) break;
+      }
+    };
+
+    phase1 = function(currentState, depth) {
+      checkSearchBudget();
+      if (optimizationExpired) return;
       if (depth === 0) {
-        if (state.minDist1() === 0) {
-          // Make sure we don't start phase 2 with a phase 2 move as the
-          // last move in phase 1, because phase 2 would then repeat the
-          // same move.
-          if (state.lastMove === null || (ref = state.lastMove, indexOf.call(allMoves2, ref) < 0)) {
-            return phase2search(state);
+        if (currentState.minDist1() === 0) {
+          if (currentState.lastMove === null || indexOf.call(allMoves2, currentState.lastMove) < 0) {
+            return phase2search(currentState);
           }
         }
-      } else if (depth > 0) {
-        if (state.minDist1() <= depth) {
-          ref1 = state.moves1();
-          results = [];
-          for (m = 0, len = ref1.length; m < len; m++) {
-            move = ref1[m];
-            next = state.next1(move);
-            phase1(next, depth - 1);
-            freeStates.push(next);
-            if (solution !== null) {
-              break;
-            } else {
-              results.push(void 0);
-            }
-          }
-          return results;
+      } else if (depth > 0 && currentState.minDist1() <= depth) {
+        const validMoves = currentState.moves1();
+        for (let moveIndex = 0; moveIndex < validMoves.length; moveIndex += 1) {
+          const nextState = currentState.next1(validMoves[moveIndex]);
+          phase1(nextState, depth - 1);
+          freeStates.push(nextState);
+          if ((!optimizing && bestSolution !== null) || optimizationExpired) break;
         }
       }
     };
-    phase2search = function(state) {
-      var depth, m, ref, results;
-      // Initialize phase 2 coordinates
-      state.init2();
-      if (detailSink) {
-        detailSink.phase1Length = state.depth;
+
+    phase2search = function(currentState) {
+      currentState.init2();
+      phase2StartDepth = currentState.depth;
+      const maxPhase2Depth = Math.min(
+        maxDepth - currentState.depth,
+        optimizing ? bestLength - 1 - currentState.depth : maxDepth - currentState.depth
+      );
+      if (maxPhase2Depth < 0) return;
+      phase2Found = false;
+      for (let depth = 0; depth <= maxPhase2Depth; depth += 1) {
+        phase2(currentState, depth);
+        if (phase2Found || optimizationExpired) break;
       }
-      results = [];
-      for (depth = m = 1, ref = maxDepth - state.depth; (1 <= ref ? m <= ref : m >= ref); depth = 1 <= ref ? ++m : --m) {
-        phase2(state, depth);
-        if (solution !== null) {
-          break;
-        }
-        results.push(depth++);
-      }
-      return results;
     };
-    phase2 = function(state, depth) {
-      var len, m, move, next, ref, results;
+
+    phase2 = function(currentState, depth) {
+      checkSearchBudget();
+      if (optimizationExpired) return;
       if (depth === 0) {
-        if (state.minDist2() === 0) {
-          solution = state.solution();
-          if (detailSink) {
-            detailSink.solution = solution;
-            detailSink.totalMoves = solution.trim().split(/\s+/).filter(Boolean).length;
-            detailSink.phase1Length = detailSink.phase1Length == null ? 0 : detailSink.phase1Length;
-            detailSink.phase2Length = Math.max(0, detailSink.totalMoves - detailSink.phase1Length);
-          }
-          return solution;
-        }
-      } else if (depth > 0) {
-        if (state.minDist2() <= depth) {
-          ref = state.moves2();
-          results = [];
-          for (m = 0, len = ref.length; m < len; m++) {
-            move = ref[m];
-            next = state.next2(move);
-            phase2(next, depth - 1);
-            freeStates.push(next);
-            if (solution !== null) {
-              break;
-            } else {
-              results.push(void 0);
-            }
-          }
-          return results;
+        if (currentState.minDist2() === 0) recordSolution(currentState);
+      } else if (currentState.minDist2() <= depth) {
+        const validMoves = currentState.moves2();
+        for (let moveIndex = 0; moveIndex < validMoves.length; moveIndex += 1) {
+          const nextState = currentState.next2(validMoves[moveIndex]);
+          phase2(nextState, depth - 1);
+          freeStates.push(nextState);
+          if (phase2Found || optimizationExpired) break;
         }
       }
     };
@@ -920,17 +921,15 @@
     state = freeStates.pop().init(this);
     phase1search(state);
     freeStates.push(state);
-    // Trim the trailing space
-    if (solution.length > 0) {
-      solution = solution.substring(0, solution.length - 1);
-    }
     if (detailSink) {
-      detailSink.solution = solution || '';
-      detailSink.totalMoves = (solution || '').trim().split(/\s+/).filter(Boolean).length;
-      detailSink.phase1Length = detailSink.phase1Length == null ? 0 : detailSink.phase1Length;
-      detailSink.phase2Length = Math.max(0, detailSink.totalMoves - detailSink.phase1Length);
+      detailSink.solution = bestSolution || '';
+      detailSink.totalMoves = bestLength === Infinity ? 0 : bestLength;
+      if (bestLength === Infinity) {
+        detailSink.phase1Length = null;
+        detailSink.phase2Length = 0;
+      }
     }
-    return solution;
+    return bestSolution || '';
   };
 
   faceNums = {
