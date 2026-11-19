@@ -785,7 +785,7 @@ function randomSolverScramble() {
   const faces = ['R', 'U', 'F', 'D', 'L', 'B'];
   const modifiers = ['', "'", '2'];
   const scrambleMoves = [];
-  for (let index = 0; index < 12; index++) {
+  for (let index = 0; index < 20; index++) {
     const face = faces[Math.floor(Math.random() * faces.length)];
     const modifier = modifiers[Math.floor(Math.random() * modifiers.length)];
     scrambleMoves.push(`${face}${modifier}`);

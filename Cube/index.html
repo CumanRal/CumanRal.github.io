@@ -16,7 +16,12 @@
 <body>
   <header class="topbar">
     <a class="brand" href="#" aria-label="Cube Lab home"><img class="brand-mark" src="./icon.png" alt=""><span>CUBE<span class="brand-light">LAB</span></span></a>
-    <nav aria-label="Main navigation"><a href="#representation">Cube states</a><a href="#walkthrough">Walkthrough</a><a href="#compare">Compare</a></nav>
+    <nav aria-label="Main navigation">
+        <a href="#representation">Representation</a>
+        <a href="#walkthrough">Different Search Strategies</a>
+        <a href="#solver-section">The Solver</a>
+        <a href="#compare">Conclusion + More!</a>
+    </nav>
     <a class="top-cta" href="#representation">Start learning <span aria-hidden="true">↓</span></a>
   </header>
 
@@ -58,7 +63,7 @@
 
     <section class="representation section-wrap" id="representation">
       <div class="section-heading">
-        <div><p class="eyebrow">01 / FIRST, REPRESENT THE CUBE</p><h2>Turn a colourful puzzle into a state a search can use.</h2></div>
+        <div><p class="eyebrow">01 / FIRST, REPRESENT THE CUBE</p><h2>Turn a colourful puzzle into a state a search can use: How does a computer see the cube?</h2></div>
         <p>An algorithm cannot reason about “the red sticker looks out of place.” It needs a precise description of the cube.</p>
       </div>
       <div class="representation-panel">
@@ -98,7 +103,7 @@
 
     <section class="walkthrough section-wrap" id="walkthrough">
       <div class="section-heading">
-        <div><p class="eyebrow">02 / FOLLOW THE SEARCH</p><h2>Now watch the algorithm work on cube states.</h2></div>
+        <div><p class="eyebrow">02 / FOLLOW THE SEARCH</p><h2>Here are humanity's algorithmic attempts at slaying the puzzle!</h2></div>
         <p>BFS, A*, and IDA* share the scramble <code>R U F</code>. Kociemba uses a short example that visibly passes through its phase-one subgroup.</p>
       </div>
       <div class="algorithm-tabs" role="tablist" aria-label="Choose an algorithm">
@@ -164,7 +169,7 @@
           <div class="solver-view-header"><span>ACTIVE CUBE</span><span id="solver-status-label">READY</span></div>
           <div id="solver-cube-display" class="solver-cube-display" aria-live="polite"></div>
           <div id="solver-path-panel" class="solver-path-panel" aria-live="polite">
-            <div class="solver-path-header"><span>SEARCH PATH</span><span class="solver-path-stage" data-role="stage-tag">STAGE 1</span></div>
+            <div class="solver-path-header"><span>ILLUSTRATIVE TWO-PHASE PATH</span><span class="solver-path-stage" data-role="stage-tag">STAGE 1</span></div>
             <div class="solver-path-visual" data-role="visual"></div>
             <div class="solver-path-status" data-role="status">Press Solve to see the path</div>
           </div>
@@ -232,7 +237,7 @@
 
     <section class="compare-section section-wrap" id="compare">
       <div class="section-heading">
-        <div><p class="eyebrow">04 / ZOOM OUT</p><h2>Different strategies. Different trade-offs.</h2></div>
+        <div><p class="eyebrow">04 / ZOOM OUT</p><h2>Each try and fail, but Kociemba's is king.</h2></div>
         <p>Once you have followed each search, compare what it remembers and what its solution guarantees.</p>
       </div>
       <div class="comparison">
